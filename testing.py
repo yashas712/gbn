@@ -107,7 +107,50 @@ def generate_hamming_code(data, total_len, parity_bits):
         else:
             hamming[i] = data[i]
             j += 1
+    # Step 2: Calculate each parity bit
+    for i in range(parity_bits):
+        parity_pos = 2 ** i
+        count = 0
+        # XOR all bits whose position (in binary) has this parity bit set
+        for k in range(1, total_len + 1):
+            if k == parity_pos:
+                continue
+            if (k & parity_pos) and hamming[k] != -1:
+                count ^= hamming[k]
+    hamming[parity_pos] = count
+    return hamming
 
+def print_code(arr, total_len):
+    """Print an array of bits from index 1 to total_len."""
+    print(" ".join(str(arr[i]) for i in range(1, total_len + 1)))
+
+def detect_and_correct(received, total_len, parity_bits):
+    """Receiver side: detect and correct single-bit error."""
+    error_pos = 0
+    # Recalculate each parity bit using received data
+    for i in range(parity_bits):
+        parity_pos = 2 ** i
+        count = 0
+        for k in range(1, total_len + 1):
+            if k & parity_pos:
+                count ^= received[k]
+        if count != 0:
+            error_pos += parity_pos
+    if error_pos == 0:
+        print("\nNo error detected. Data is correct.")
+    else:
+        print(f"\nError detected at position: {error_pos}")
+        # Flip the erroneous bit to correct it
+        received[error_pos] = 0 if received[error_pos] else 1
+        print("Corrected Code: ", end="")
+        print_code(received, total_len)
+    return error_pos
+
+def extract_data(arr, total_len):
+    """Extract original data bits from the (corrected) hamming code."""
+    print("Extracted Data: ", end="")
+    bits = [str(arr[i]) for i in range(1, total_len + 1) if not is_power_of_2(i)]
+    print(" ".join(bits))
 
 def main():
     data_len = int(input("Enter the number of data bits: "))
@@ -116,3 +159,174 @@ def main():
     total_len = data_len + parity_bits
 
     hamming = generate_hamming_code(data, total_len, parity_bits)
+    print("Generated Hamming Code: ", end="")
+    print_code(hamming, total_len)
+    # Copy to received array to simulate transmission
+    received = dict(hamming)
+    print("\nDo you want to introduce an error during transmission?")
+    print("1. Yes\n2. No")
+    choice = int(input("Enter choice: "))
+    if choice == 1:
+        pos = int(input(f"Enter bit position to flip (1 to {total_len}): "))
+        if 1 <= pos <= total_len:
+            received[pos] = 0 if received[pos] else 1
+    print("\n----- RECEIVER SIDE -----")
+    print("Received Code: ", end="")
+    print_code(received, total_len)
+    detect_and_correct(received, total_len, parity_bits)
+    extract_data(received, total_len)
+
+if __name__ == "__main__":
+    main()
+
+"""
+Lab 3.4 - Go-Back-N (GBN) Sliding Window Protocol : Receiver (Python)
+Receiver window size = 1, cumulative acknowledgments.
+"""
+import socket
+import json
+PORT = 9092
+SIZE = 1024
+def main():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("", PORT))
+    expected = 0
+    print("GBN Receiver Started...\n")
+    while True:
+        raw, client = sock.recvfrom(SIZE)
+        packet = json.loads(raw.decode())
+        print(f"Received Packet {packet['seq']} : {packet['data']}")
+        # Correct Packet
+        if packet["seq"] == expected:
+            ack = {"ack": expected}
+            sock.sendto(json.dumps(ack).encode(), client)
+            print(f"ACK {ack['ack']} Sent\n")
+            # Stop Transmission
+            if packet["data"] == "END":
+                break
+            expected += 1
+        else:
+            ack = {"ack": expected - 1}
+            sock.sendto(json.dumps(ack).encode(), client)
+            print(f"Wrong Packet. Expected {expected}")
+            print(f"ACK {ack['ack']} Re-sent\n")
+    sock.close()
+if __name__ == "__main__":
+    main()
+
+"""
+Lab 3.4 - Go-Back-N (GBN) Sliding Window Protocol : Sender (Python)
+"""
+import socket
+import json
+PORT = 9092
+WINDOW = 4
+TOTAL = 8
+def main():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server = ("127.0.0.1", PORT)
+    messages = [
+    "Message 1", "Message 2", "Message 3", "Message 4",
+    "Message 5", "Message 6", "Message 7", "END",
+    ]
+    # Prepare Packets
+    packets = [{"seq": i, "data": messages[i]} for i in range(TOTAL)]
+    print("GBN Sender Started...\n")
+    base = 0
+    next_seq = 0
+    while base < TOTAL:
+        # Send packets in the window
+        while next_seq < base + WINDOW and next_seq < TOTAL:
+            sock.sendto(json.dumps(packets[next_seq]).encode(), server)
+            print(f"Packet {packets[next_seq]['seq']} Sent : {packets[next_seq]['data']}")
+            next_seq += 1
+        # Receive ACK
+        raw, _ = sock.recvfrom(1024)
+        ack = json.loads(raw.decode())
+        print(f"ACK {ack['ack']} Received\n")
+        # Slide Window
+        base = ack["ack"] + 1
+    print("Transmission Completed.")
+    sock.close()
+if __name__ == "__main__":
+    main()
+
+
+"""
+Lab 3.5 - Selective Repeat (SR) Sliding Window Protocol : Receiver (Python)
+"""
+import socket
+import json
+PORT = 9093
+WINDOW = 4
+TOTAL = 8
+def main():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("", PORT))
+    buffer = {}
+    received = [0] * TOTAL
+    base = 0
+    print("Selective Repeat Receiver Started...\n")
+    while True:
+        raw, client = sock.recvfrom(1024)
+        packet = json.loads(raw.decode())
+        seq = packet["seq"]
+        print(f"Received Packet {seq} : {packet['data']}")
+        # Packet is inside receiver window
+        if base <= seq < base + WINDOW:
+            buffer[seq] = packet
+            received[seq] = 1
+            # Send Individual ACK
+            ack = {"ack": seq}
+            sock.sendto(json.dumps(ack).encode(), client)
+            print(f"ACK {ack['ack']} Sent")
+            # Deliver packets in order
+            while received[base] == 1:
+                print(f"Delivered Packet {buffer[base]['seq']} : {buffer[base]['data']}")
+                if buffer[base]["data"] == "END":
+                    sock.close()
+                    return
+                base += 1
+            print(f"Window Base = {base}\n")
+        else:
+            print("Packet Outside Window. Ignored.\n")
+if __name__ == "__main__":
+    main()
+
+"""
+Lab 3.5 - Selective Repeat (SR) Sliding Window Protocol : Sender (Python)
+"""
+import socket
+import json
+PORT = 9093
+WINDOW = 4
+TOTAL = 8
+def main():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server = ("127.0.0.1", PORT)
+    messages = [
+    "Message 1", "Message 2", "Message 3", "Message 4",
+    "Message 5", "Message 6", "Message 7", "END",
+    ]
+    packets = [{"seq": i, "data": messages[i]} for i in range(TOTAL)]
+    base = 0
+    next_seq = 0
+    print("Selective Repeat Sender Started...\n")
+    while base < TOTAL:
+        # Send packets inside the window
+        while next_seq < base + WINDOW and next_seq < TOTAL:
+            sock.sendto(json.dumps(packets[next_seq]).encode(), server)
+            print(f"Packet {packets[next_seq]['seq']} Sent : {packets[next_seq]['data']}")
+            next_seq += 1
+        # Receive Individual ACK
+        raw, _ = sock.recvfrom(1024)
+        ack = json.loads(raw.decode())
+        print(f"ACK {ack['ack']} Received")
+        # Slide the sender window
+        if ack["ack"] == base:
+            base += 1
+        print(f"Window Base = {base}\n")
+    print("Transmission Completed.")
+    sock.close()
+if __name__ == "__main__":
+    main()
